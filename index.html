@@ -1,0 +1,990 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>哨戒機 vs 潜水艦 - Tactical Sonar</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&family=Noto+Sans+JP:wght@400;600;700;900&display=swap');
+
+    * {
+      box-sizing: border-box;
+      -webkit-tap-highlight-color: transparent;
+      user-select: none;
+    }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100dvh;
+      overflow: hidden;
+      background-color: #040d18;
+      color: #e2e8f0;
+      font-family: 'Inter', 'Noto Sans JP', sans-serif;
+    }
+
+    /* レーダー背景グリッド演出 */
+    .radar-bg {
+      background:
+        radial-gradient(circle at 50% 45%, rgba(6, 182, 212, 0.12) 0%, rgba(4, 13, 24, 0.96) 72%),
+        linear-gradient(180deg, #061324 0%, #030912 100%);
+    }
+
+    /* 盤面コンテナ：画面の縦横比に応じて最大の正方形を確保 */
+    .board-wrapper {
+      width: min(94vw, calc(100dvh - 205px));
+      height: min(94vw, calc(100dvh - 205px));
+      max-width: 520px;
+      max-height: 520px;
+    }
+
+    .grid-board {
+      display: grid;
+      grid-template-columns: 20px repeat(8, 1fr);
+      grid-template-rows: 20px repeat(8, 1fr);
+      width: 100%;
+      height: 100%;
+      background: rgba(8, 25, 44, 0.85);
+      border: 1.5px solid rgba(34, 211, 238, 0.45);
+      border-radius: 12px;
+      box-shadow: 0 0 28px rgba(6, 182, 212, 0.16), inset 0 0 20px rgba(6, 182, 212, 0.08);
+      padding: 4px;
+      gap: 2px;
+    }
+
+    .coord-label {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 10px;
+      font-weight: 700;
+      color: rgba(103, 232, 249, 0.65);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .cell {
+      position: relative;
+      border-radius: 6px;
+      background: rgba(12, 36, 62, 0.65);
+      border: 1px solid rgba(56, 189, 248, 0.16);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: transform 0.12s ease, background-color 0.18s ease, border-color 0.18s ease;
+      cursor: default;
+      overflow: hidden;
+    }
+
+    /* ソナー範囲（周囲9マス）の常時微弱フレーム */
+    .cell.sonar-zone {
+      background: rgba(14, 52, 84, 0.72);
+      border-color: rgba(34, 211, 238, 0.35);
+    }
+
+    /* 移動可能マス */
+    .cell.valid-move {
+      background: rgba(6, 182, 212, 0.22);
+      border: 1.5px solid rgba(34, 211, 238, 0.75);
+      cursor: pointer;
+    }
+    .cell.valid-move:active {
+      transform: scale(0.92);
+      background: rgba(6, 182, 212, 0.45);
+    }
+    .cell.valid-move::after {
+      content: '';
+      width: 8px;
+      height: 8px;
+      border-radius: 9999px;
+      background: rgba(103, 232, 249, 0.85);
+      box-shadow: 0 0 8px #22d3ee;
+    }
+
+    /* 攻撃可能マス（周囲9マス） */
+    .cell.valid-attack {
+      background: rgba(244, 63, 94, 0.2);
+      border: 1.5px solid rgba(251, 113, 133, 0.8);
+      cursor: pointer;
+    }
+    .cell.valid-attack:active {
+      transform: scale(0.92);
+      background: rgba(244, 63, 94, 0.48);
+    }
+
+    /* 哨戒機アニメーション */
+    .aircraft-icon {
+      width: 78%;
+      height: 78%;
+      z-index: 20;
+      filter: drop-shadow(0 3px 6px rgba(0, 0, 0, 0.75)) drop-shadow(0 0 8px rgba(56, 189, 248, 0.8));
+      transition: transform 0.25s cubic-bezier(0.22, 1, 0.36, 1);
+      pointer-events: none;
+    }
+
+    /* ソナー波紋エフェクト */
+    @keyframes sonarPulse {
+      0% {
+        box-shadow: inset 0 0 0 0 rgba(34, 211, 238, 0.7);
+        background-color: rgba(34, 211, 238, 0.35);
+      }
+      100% {
+        box-shadow: inset 0 0 0 14px rgba(34, 211, 238, 0);
+      }
+    }
+    .sonar-ping-anim {
+      animation: sonarPulse 0.65s ease-out;
+    }
+
+    /* 爆雷・被弾フラッシュ */
+    @keyframes boomFlash {
+      0% { transform: scale(0.4); opacity: 1; }
+      60% { transform: scale(1.15); opacity: 1; }
+      100% { transform: scale(1); opacity: 0.95; }
+    }
+    .effect-pop {
+      animation: boomFlash 0.35s ease-out forwards;
+    }
+
+    /* 画面シェイク（被弾時） */
+    @keyframes screenShake {
+      0%, 100% { transform: translate(0, 0); }
+      20% { transform: translate(-5px, 3px); }
+      40% { transform: translate(5px, -3px); }
+      60% { transform: translate(-4px, -2px); }
+      80% { transform: translate(4px, 2px); }
+    }
+    .shake {
+      animation: screenShake 0.35s ease-in-out;
+    }
+  </style>
+</head>
+<body class="radar-bg flex flex-col justify-between items-center px-2 py-2 sm:py-3">
+
+  <!-- 上部コンパクトステータスバー -->
+  <header class="w-full max-w-[520px] flex items-center justify-between gap-1.5 bg-slate-900/85 border border-cyan-500/30 rounded-xl px-2.5 py-1.5 shadow-lg backdrop-blur-sm">
+    <!-- ターン数 -->
+    <div class="flex flex-col items-center bg-slate-950/70 border border-slate-800 rounded-lg px-2 py-1 min-w-[52px]">
+      <span class="text-[9px] text-cyan-400 font-bold tracking-wider">TURN</span>
+      <span id="turnDisplay" class="text-sm font-black text-white leading-tight">1</span>
+    </div>
+
+    <!-- 自機被弾状況（最大耐久＝敵艦長のため上限は非表示） -->
+    <div class="flex flex-col flex-1 bg-slate-950/70 border border-slate-800 rounded-lg px-2.5 py-1">
+      <div class="flex items-center justify-between">
+        <span class="text-[9px] text-slate-400 font-bold">自機被弾 <span class="text-cyan-400/80">(耐久=敵艦長)</span></span>
+        <span id="damageCountText" class="text-[10px] font-bold text-rose-400">0 被弾</span>
+      </div>
+      <div id="damageSlots" class="flex items-center gap-1.5 mt-0.5 h-3.5">
+        <!-- JSで動的に被弾マークと未知スロットを描画 -->
+      </div>
+    </div>
+
+    <!-- ソナー反応バッジ -->
+    <div id="sonarBadge" class="flex flex-col items-center justify-center bg-slate-950/80 border border-cyan-500/40 rounded-lg px-2.5 py-1 min-w-[82px]">
+      <span class="text-[9px] text-slate-400 font-bold">SONAR (9マス)</span>
+      <span id="sonarText" class="text-xs font-extrabold text-cyan-300 leading-tight">探知中...</span>
+    </div>
+
+    <!-- 設定・ルールボタン -->
+    <button id="openSettingsBtn" aria-label="設定とルール" class="flex items-center justify-center w-9 h-9 rounded-lg bg-slate-800 hover:bg-slate-700 active:scale-95 border border-slate-600/70 text-cyan-300 transition">
+      <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+        <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+      </svg>
+    </button>
+  </header>
+
+  <!-- 中央：最大化された8×8ゲームフィールド -->
+  <main id="mainArea" class="flex-1 w-full flex flex-col items-center justify-center my-1 min-h-0">
+    <div class="board-wrapper relative flex items-center justify-center">
+      <div id="gridBoard" class="grid-board">
+        <!-- JSで座標と8×8セルを生成 -->
+      </div>
+    </div>
+
+    <!-- 1行戦況メッセージバナー -->
+    <div id="statusBanner" class="w-full max-w-[520px] mt-1.5 px-3 py-1.5 rounded-lg bg-slate-900/90 border border-cyan-500/25 text-center text-xs sm:text-sm font-semibold text-cyan-100 truncate shadow">
+      移動先（青枠）をタップして哨戒機を移動させてください
+    </div>
+  </main>
+
+  <!-- 下部：親指で操作しやすい行動モード切替バー -->
+  <footer class="w-full max-w-[520px] grid grid-cols-2 gap-2.5 pb-1">
+    <button id="modeMoveBtn" class="flex flex-col items-center justify-center py-2.5 px-2 rounded-xl font-bold border-2 transition active:scale-95 bg-cyan-500/25 border-cyan-400 text-cyan-200 shadow-[0_0_15px_rgba(6,182,212,0.25)]">
+      <div class="flex items-center gap-1.5 text-sm sm:text-base">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
+        </svg>
+        <span>移動モード</span>
+      </div>
+      <span class="text-[10px] font-normal text-cyan-300/90 mt-0.5">8方向 1〜2マス (攻撃不可)</span>
+    </button>
+
+    <button id="modeAttackBtn" class="flex flex-col items-center justify-center py-2.5 px-2 rounded-xl font-bold border-2 transition active:scale-95 bg-slate-900/80 border-slate-700 text-slate-400">
+      <div class="flex items-center gap-1.5 text-sm sm:text-base">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="9" />
+          <path stroke-linecap="round" d="M12 3v4m0 10v4M3 12h4m10 0h4" />
+        </svg>
+        <span>爆雷攻撃</span>
+      </div>
+      <span class="text-[10px] font-normal text-rose-300/90 mt-0.5">周囲9マスへ投下 (移動不可)</span>
+    </button>
+  </footer>
+
+  <!-- 設定＆ルールモーダル -->
+  <div id="settingsModal" class="fixed inset-0 z-50 hidden items-center justify-center bg-slate-950/85 backdrop-blur-sm p-4">
+    <div class="w-full max-w-md bg-slate-900 border border-cyan-500/40 rounded-2xl p-4 shadow-2xl max-h-[90dvh] overflow-y-auto">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-2.5 mb-3">
+        <h2 class="text-base font-black text-cyan-300 flex items-center gap-2">
+          <span>⚙ 設定・作戦ルール</span>
+        </h2>
+        <button id="closeSettingsBtn" class="w-8 h-8 rounded-lg bg-slate-800 text-slate-300 hover:text-white flex items-center justify-center font-bold">✕</button>
+      </div>
+
+      <!-- 設定項目 -->
+      <div class="space-y-3 text-xs">
+        <div class="bg-slate-950/70 p-3 rounded-xl border border-slate-800 space-y-2.5">
+          <div>
+            <label class="block text-slate-300 font-bold mb-1">敵潜水艦のサイズ設定</label>
+            <select id="subLengthSelect" class="w-full bg-slate-800 border border-slate-600 rounded-lg px-2.5 py-2 text-white font-semibold">
+              <option value="random" selected>ランダム（2〜4マス・推理モード）</option>
+              <option value="2">2マス固定（小型潜水艦）</option>
+              <option value="3">3マス固定（中型潜水艦）</option>
+              <option value="4">4マス固定（大型潜水艦）</option>
+            </select>
+          </div>
+
+          <div class="flex items-center justify-between pt-1">
+            <div>
+              <span class="font-bold text-slate-200 block">潜水艦位置を透視表示</span>
+              <span class="text-[10px] text-slate-400">動きを確認したい練習用オプション</span>
+            </div>
+            <input type="checkbox" id="debugRevealToggle" class="w-5 h-5 accent-cyan-400 rounded cursor-pointer" />
+          </div>
+
+          <div class="flex items-center justify-between pt-1">
+            <div>
+              <span class="font-bold text-slate-200 block">ソナー・爆雷効果音</span>
+              <span class="text-[10px] text-slate-400">Web Audioによる電子音演出</span>
+            </div>
+            <input type="checkbox" id="soundToggle" checked class="w-5 h-5 accent-cyan-400 rounded cursor-pointer" />
+          </div>
+
+          <button id="restartFromSettingsBtn" class="w-full py-2.5 mt-1 rounded-xl bg-cyan-600 hover:bg-cyan-500 active:scale-98 text-white font-bold text-sm shadow">
+            この設定で新規作戦開始
+          </button>
+        </div>
+
+        <!-- ルール説明 -->
+        <div class="bg-slate-950/70 p-3 rounded-xl border border-slate-800 space-y-1.5 text-slate-300 leading-relaxed">
+          <h3 class="font-bold text-cyan-400 text-xs mb-1">【基本ルールと推理のポイント】</h3>
+          <p>• <strong class="text-white">二者択一</strong>：1ターンに「移動（8方向1〜2マス）」か「爆雷攻撃（周囲9マス）」のどちらか一方のみ実行できます。</p>
+          <p>• <strong class="text-white">ソナー探知</strong>：行動終了時、自機の周囲9マス以内に潜水艦がいるとソナーが反応します。</p>
+          <p>• <strong class="text-white">敵の対空迎撃</strong>：潜水艦の<strong>真上（同じマス）</strong>に自機がいると、敵は移動せず真上へ対空攻撃を行います（1ダメージ）。</p>
+          <p>• <strong class="text-amber-300">耐久値と全長推理</strong>：自機の最大耐久力は<strong>「敵潜水艦のマス数」と同じ</strong>です。例えば2発被弾しても撃墜されなければ、敵は<strong>3マス以上の潜水艦</strong>だと推理できます！</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 勝敗リザルトモーダル -->
+  <div id="resultModal" class="fixed inset-0 z-50 hidden items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4">
+    <div class="w-full max-w-sm bg-slate-900 border-2 border-cyan-400/60 rounded-2xl p-5 text-center shadow-2xl">
+      <div id="resultBadge" class="inline-block px-3 py-1 rounded-full text-xs font-black tracking-wider mb-2 bg-cyan-500/20 text-cyan-300 border border-cyan-400/50">
+        MISSION COMPLETE
+      </div>
+      <h2 id="resultTitle" class="text-2xl font-black text-white mb-1">敵潜水艦を撃沈！</h2>
+      <p id="resultDesc" class="text-xs sm:text-sm text-slate-300 mb-4 leading-relaxed"></p>
+
+      <div class="bg-slate-950/80 border border-slate-800 rounded-xl p-3 mb-4 text-xs space-y-1.5">
+        <div class="flex justify-between">
+          <span class="text-slate-400">経過ターン数</span>
+          <span id="resTurns" class="font-bold text-white">-</span>
+        </div>
+        <div class="flex justify-between">
+          <span class="text-slate-400">敵潜水艦の全長（自機耐久）</span>
+          <span id="resSubLength" class="font-bold text-amber-300">-</span>
+        </div>
+        <div class="flex justify-between">
+          <span class="text-slate-400">自機被弾数</span>
+          <span id="resDamage" class="font-bold text-rose-400">-</span>
+        </div>
+      </div>
+
+      <div class="flex gap-2">
+        <button id="inspectBoardBtn" class="flex-1 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs border border-slate-600">
+          盤面を確認
+        </button>
+        <button id="playAgainBtn" class="flex-[1.5] py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black text-sm shadow-lg">
+          もう一度出撃
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (() => {
+      const GRID_SIZE = 8;
+      const COLS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
+
+      // ゲーム状態
+      const state = {
+        turn: 1,
+        mode: 'move', // 'move' | 'attack'
+        aircraft: { r: 3, c: 3 },
+        aircraftAngle: 0,
+        damageTaken: 0,
+        subLengthSetting: 'random',
+        subLength: 3,
+        // 潜水艦の船体セグメント配列: [{ r, c, hit: boolean }]
+        submarine: [],
+        sonarDetected: false,
+        lastActionEffect: null, // { r, c, type: 'hit' | 'miss' | 'aa' }
+        gameOver: false,
+        victory: false,
+        revealSub: false,
+        soundEnabled: true,
+        isProcessing: false
+      };
+
+      // DOM参照
+      const gridBoard = document.getElementById('gridBoard');
+      const turnDisplay = document.getElementById('turnDisplay');
+      const damageCountText = document.getElementById('damageCountText');
+      const damageSlots = document.getElementById('damageSlots');
+      const sonarBadge = document.getElementById('sonarBadge');
+      const sonarText = document.getElementById('sonarText');
+      const statusBanner = document.getElementById('statusBanner');
+      const modeMoveBtn = document.getElementById('modeMoveBtn');
+      const modeAttackBtn = document.getElementById('modeAttackBtn');
+      const mainArea = document.getElementById('mainArea');
+
+      // モーダル関連
+      const settingsModal = document.getElementById('settingsModal');
+      const resultModal = document.getElementById('resultModal');
+
+      // Web Audio API 簡易シンセサイザー
+      let audioCtx = null;
+      function playSound(type) {
+        if (!state.soundEnabled) return;
+        try {
+          if (!audioCtx) {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+          }
+          if (audioCtx.state === 'suspended') {
+            audioCtx.resume();
+          }
+          const now = audioCtx.currentTime;
+          const osc = audioCtx.createOscillator();
+          const gain = audioCtx.createGain();
+          osc.connect(gain);
+          gain.connect(audioCtx.destination);
+
+          if (type === 'sonar_hit') {
+            // 高いソナー反応音（ピン・ピン！）
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(1180, now);
+            osc.frequency.exponentialRampToValueAtTime(1480, now + 0.12);
+            gain.gain.setValueAtTime(0.18, now);
+            gain.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
+            osc.start(now);
+            osc.stop(now + 0.36);
+          } else if (type === 'sonar_clear') {
+            // 低いソナー走査音
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(520, now);
+            gain.gain.setValueAtTime(0.07, now);
+            gain.gain.exponentialRampToValueAtTime(0.001, now + 0.2);
+            osc.start(now);
+            osc.stop(now + 0.22);
+          } else if (type === 'explosion') {
+            // 命中・対空被弾音
+            osc.type = 'sawtooth';
+            osc.frequency.setValueAtTime(150, now);
+            osc.frequency.exponentialRampToValueAtTime(38, now + 0.4);
+            gain.gain.setValueAtTime(0.28, now);
+            gain.gain.exponentialRampToValueAtTime(0.001, now + 0.42);
+            osc.start(now);
+            osc.stop(now + 0.43);
+          } else if (type === 'splash') {
+            // 水柱音
+            osc.type = 'triangle';
+            osc.frequency.setValueAtTime(260, now);
+            osc.frequency.exponentialRampToValueAtTime(90, now + 0.22);
+            gain.gain.setValueAtTime(0.14, now);
+            gain.gain.exponentialRampToValueAtTime(0.001, now + 0.24);
+            osc.start(now);
+            osc.stop(now + 0.25);
+          }
+        } catch (e) {
+          // 音声再生エラーは無視
+        }
+      }
+
+      // 盤面の初期DOM構築（座標ラベル + 64セル）
+      function buildBoardDOM() {
+        gridBoard.innerHTML = '';
+        // 左上角
+        const corner = document.createElement('div');
+        corner.className = 'coord-label';
+        gridBoard.appendChild(corner);
+
+        // 上辺 A〜H
+        for (let c = 0; c < GRID_SIZE; c++) {
+          const lbl = document.createElement('div');
+          lbl.className = 'coord-label';
+          lbl.textContent = COLS[c];
+          gridBoard.appendChild(lbl);
+        }
+
+        // 各行 1〜8 + セル
+        for (let r = 0; r < GRID_SIZE; r++) {
+          const rowLbl = document.createElement('div');
+          rowLbl.className = 'coord-label';
+          rowLbl.textContent = (r + 1).toString();
+          gridBoard.appendChild(rowLbl);
+
+          for (let c = 0; c < GRID_SIZE; c++) {
+            const cell = document.createElement('div');
+            cell.className = 'cell';
+            cell.dataset.r = r;
+            cell.dataset.c = c;
+            cell.addEventListener('click', () => handleCellTap(r, c));
+            gridBoard.appendChild(cell);
+          }
+        }
+      }
+
+      // 新規ゲーム初期化
+      function initGame() {
+        state.turn = 1;
+        state.mode = 'move';
+        state.damageTaken = 0;
+        state.lastActionEffect = null;
+        state.gameOver = false;
+        state.victory = false;
+        state.isProcessing = false;
+        resultModal.classList.add('hidden');
+        resultModal.classList.remove('flex');
+
+        // 潜水艦サイズ決定（2, 3, または 4）
+        if (state.subLengthSetting === 'random') {
+          state.subLength = Math.floor(Math.random() * 3) + 2; // 2, 3, 4
+        } else {
+          state.subLength = parseInt(state.subLengthSetting, 10);
+        }
+
+        // 哨戒機の初期位置（中央付近）
+        state.aircraft = {
+          r: Math.floor(Math.random() * 4) + 2,
+          c: Math.floor(Math.random() * 4) + 2
+        };
+        state.aircraftAngle = 0;
+
+        // 潜水艦の初期配置（初期ターンからいきなり真上に重ならないよう配置）
+        placeSubmarineRandomly();
+
+        // 初回ソナー判定
+        state.sonarDetected = checkSonar();
+        setBanner(
+          state.sonarDetected
+            ? '【開戦】初回ソナーに反応あり！周囲9マス内に潜伏中！'
+            : '【開戦】現在周囲に反応なし。哨戒機を移動させて索敵せよ'
+        );
+
+        renderAll(true);
+      }
+
+      // 潜水艦をランダムな直線位置に配置
+      function placeSubmarineRandomly() {
+        const len = state.subLength;
+        let placed = false;
+        let attempts = 0;
+
+        while (!placed && attempts < 200) {
+          attempts++;
+          const isHorizontal = Math.random() < 0.5;
+          const maxR = isHorizontal ? GRID_SIZE - 1 : GRID_SIZE - len;
+          const maxC = isHorizontal ? GRID_SIZE - len : GRID_SIZE - 1;
+          const startR = Math.floor(Math.random() * (maxR + 1));
+          const startC = Math.floor(Math.random() * (maxC + 1));
+
+          const segments = [];
+          let overlapsAircraft = false;
+          for (let i = 0; i < len; i++) {
+            const rr = startR + (isHorizontal ? 0 : i);
+            const cc = startC + (isHorizontal ? i : 0);
+            if (rr === state.aircraft.r && cc === state.aircraft.c) {
+              overlapsAircraft = true;
+            }
+            segments.push({ r: rr, c: cc, hit: false });
+          }
+
+          if (!overlapsAircraft) {
+            state.submarine = segments;
+            placed = true;
+          }
+        }
+      }
+
+      // 周囲9マス（3x3）以内か判定
+      function isWithinSonar(r, c) {
+        return Math.abs(r - state.aircraft.r) <= 1 && Math.abs(c - state.aircraft.c) <= 1;
+      }
+
+      // ソナー探知判定（潜水艦のいずれかのマスが哨戒機の周囲9マス以内にあるか）
+      function checkSonar() {
+        return state.submarine.some(seg => isWithinSonar(seg.r, seg.c));
+      }
+
+      // 哨戒機の有効移動先判定（8方向 1〜2マス、現在地は除く）
+      function isValidMoveTarget(r, c) {
+        const dr = Math.abs(r - state.aircraft.r);
+        const dc = Math.abs(c - state.aircraft.c);
+        if (dr === 0 && dc === 0) return false;
+        if (dr > 2 || dc > 2) return false;
+        // 8方向（縦・横・斜め直線）
+        return dr === 0 || dc === 0 || dr === dc;
+      }
+
+      // 哨戒機の有効攻撃先判定（中心から9マス以内＝現在地＋周囲8マス）
+      function isValidAttackTarget(r, c) {
+        return isWithinSonar(r, c);
+      }
+
+      // セルタップ時の処理
+      function handleCellTap(r, c) {
+        if (state.gameOver || state.isProcessing) return;
+
+        if (state.mode === 'move') {
+          if (!isValidMoveTarget(r, c)) {
+            setBanner('そこへは移動できません（8方向 1〜2マス以内を選択）');
+            return;
+          }
+          executePlayerMove(r, c);
+        } else {
+          if (!isValidAttackTarget(r, c)) {
+            setBanner('射程外です（哨戒機を中心とする周囲9マス以内を選択）');
+            return;
+          }
+          executePlayerAttack(r, c);
+        }
+      }
+
+      // プレイヤー移動実行
+      function executePlayerMove(targetR, targetC) {
+        state.isProcessing = true;
+        const dr = targetR - state.aircraft.r;
+        const dc = targetC - state.aircraft.c;
+        // 機首の向きを計算
+        state.aircraftAngle = Math.round((Math.atan2(dc, -dr) * 180) / Math.PI);
+        state.aircraft = { r: targetR, c: targetC };
+        state.lastActionEffect = null;
+
+        // 移動後のソナー走査
+        state.sonarDetected = checkSonar();
+        playSound(state.sonarDetected ? 'sonar_hit' : 'sonar_clear');
+
+        const coordStr = `${COLS[targetC]}${targetR + 1}`;
+        setBanner(
+          state.sonarDetected
+            ? `${coordStr} へ移動 ――【ソナー反応あり！】周囲9マスに敵影！`
+            : `${coordStr} へ移動 ―― ソナー反応なし`
+        );
+
+        renderAll(true);
+
+        // 敵ターンへ
+        setTimeout(() => {
+          executeEnemyTurn();
+        }, 420);
+      }
+
+      // プレイヤー爆雷攻撃実行
+      function executePlayerAttack(targetR, targetC) {
+        state.isProcessing = true;
+        const coordStr = `${COLS[targetC]}${targetR + 1}`;
+
+        // 命中判定
+        const hitSegment = state.submarine.find(seg => seg.r === targetR && seg.c === targetC);
+
+        if (hitSegment) {
+          const alreadyDamaged = hitSegment.hit;
+          hitSegment.hit = true;
+          state.lastActionEffect = { r: targetR, c: targetC, type: 'hit' };
+          playSound('explosion');
+
+          // 全マス撃破判定
+          const allSunk = state.submarine.every(seg => seg.hit);
+          if (allSunk) {
+            state.gameOver = true;
+            state.victory = true;
+            state.revealSub = true;
+            setBanner(`【撃沈！】${coordStr} への爆雷で敵潜水艦（全長${state.subLength}マス）を完全撃破！`);
+            renderAll(false);
+            setTimeout(() => showResultModal(true), 650);
+            return;
+          }
+
+          setBanner(
+            alreadyDamaged
+              ? `${coordStr} に爆雷投下 ―― 損傷箇所に再命中！別のマスを狙え！`
+              : `${coordStr} に爆雷投下 ――【直撃命中！】敵艦体にダメージを与えた！`
+          );
+        } else {
+          state.lastActionEffect = { r: targetR, c: targetC, type: 'miss' };
+          playSound('splash');
+          setBanner(`${coordStr} に爆雷投下 ―― 水柱のみ（ハズレ）`);
+        }
+
+        // 攻撃後も現在位置でソナー情報更新
+        state.sonarDetected = checkSonar();
+        renderAll(false);
+
+        // 敵ターンへ
+        setTimeout(() => {
+          executeEnemyTurn();
+        }, 480);
+      }
+
+      // 敵潜水艦（AI）のターン
+      function executeEnemyTurn() {
+        if (state.gameOver) return;
+
+        // 1. 哨戒機が潜水艦の「真上（同一マス）」にいるかチェック
+        const isDirectlyAbove = state.submarine.some(
+          seg => seg.r === state.aircraft.r && seg.c === state.aircraft.c
+        );
+
+        if (isDirectlyAbove) {
+          // 敵は移動せず「真上への対空攻撃」を実施！
+          state.damageTaken += 1;
+          state.lastActionEffect = { r: state.aircraft.r, c: state.aircraft.c, type: 'aa' };
+          playSound('explosion');
+          triggerShake();
+
+          // 敗北判定（被弾数が潜水艦のマス数に達したら撃墜）
+          if (state.damageTaken >= state.subLength) {
+            state.gameOver = true;
+            state.victory = false;
+            state.revealSub = true;
+            setBanner(`【被弾撃墜】真下からの対空ミサイル直撃！限界耐久（${state.subLength}発）を超過！`);
+            renderAll(false);
+            setTimeout(() => showResultModal(false), 700);
+            return;
+          }
+
+          // 耐えた場合：敵艦が少なくとも (damageTaken + 1) マス以上であることが確定するヒント！
+          const minPossibleLen = state.damageTaken + 1;
+          setBanner(
+            `【警告・対空被弾！】真下から攻撃を受けた！（計${state.damageTaken}被弾 → 敵は${minPossibleLen}マス以上と判明！）`
+          );
+        } else {
+          // 2. 真上にいない場合：潜水艦は上下左右いずれかに1マス移動（全体が平行移動）
+          moveSubmarineAI();
+
+          // 敵移動後のソナー再判定
+          const prevSonar = state.sonarDetected;
+          state.sonarDetected = checkSonar();
+
+          if (!prevSonar && state.sonarDetected) {
+            setBanner((statusBanner.textContent || '') + ' ／ 敵艦がソナー圏内に接近！');
+          } else if (prevSonar && !state.sonarDetected) {
+            setBanner((statusBanner.textContent || '') + ' ／ 敵艦がソナー圏外へ離脱！');
+          }
+        }
+
+        // ターン進行
+        state.turn += 1;
+        state.isProcessing = false;
+        renderAll(false);
+      }
+
+      // 敵潜水艦の移動ロジック（上下左右1マス平行移動）
+      function moveSubmarineAI() {
+        const dirs = [
+          { dr: -1, dc: 0 },
+          { dr: 1, dc: 0 },
+          { dr: 0, dc: -1 },
+          { dr: 0, dc: 1 }
+        ];
+
+        // 盤面内に収まる有効移動方向を抽出
+        const validMoves = dirs.filter(d =>
+          state.submarine.every(seg => {
+            const nr = seg.r + d.dr;
+            const nc = seg.c + d.dc;
+            return nr >= 0 && nr < GRID_SIZE && nc >= 0 && nc < GRID_SIZE;
+          })
+        );
+
+        if (validMoves.length === 0) return;
+
+        // 戦略評価：
+        // - 哨戒機の真下に入るのは避けたい（ただし待ち伏せを狙う場合もあるが基本は回避寄り）
+        // - 被弾している場合やソナー圏内にいる場合は離れる方向をやや優先
+        const isDamaged = state.submarine.some(s => s.hit);
+        const currentlyDetected = checkSonar();
+
+        let bestMove = validMoves[Math.floor(Math.random() * validMoves.length)];
+        let bestScore = -999;
+
+        validMoves.forEach(d => {
+          let score = Math.random() * 3; // ランダム性を持たせて読まれにくくする
+          let underAircraft = false;
+          let inSonarCount = 0;
+
+          state.submarine.forEach(seg => {
+            const nr = seg.r + d.dr;
+            const nc = seg.c + d.dc;
+            if (nr === state.aircraft.r && nc === state.aircraft.c) {
+              underAircraft = true;
+            }
+            if (Math.abs(nr - state.aircraft.r) <= 1 && Math.abs(nc - state.aircraft.c) <= 1) {
+              inSonarCount++;
+            }
+          });
+
+          // 哨戒機の真下に自ら飛び込むと次ターン爆雷を受けるリスクが高いため減点
+          if (underAircraft) score -= 2.5;
+
+          // 既に探知されている・被弾している場合はソナー圏外へ逃げる動きを優先
+          if (currentlyDetected || isDamaged) {
+            score -= inSonarCount * 1.8;
+          }
+
+          if (score > bestScore) {
+            bestScore = score;
+            bestMove = d;
+          }
+        });
+
+        // 潜水艦の全セグメントを移動
+        state.submarine.forEach(seg => {
+          seg.r += bestMove.dr;
+          seg.c += bestMove.dc;
+        });
+      }
+
+      // 画面全体の再描画
+      function renderAll(pingSonar = false) {
+        // ターン表示
+        turnDisplay.textContent = state.turn;
+
+        // 被弾インジケーター（最大値は隠しつつ、現在の被弾数と「？」スロットを表示）
+        damageCountText.textContent = `${state.damageTaken} 被弾`;
+        damageSlots.innerHTML = '';
+        const displaySlots = Math.max(4, state.damageTaken + 1);
+        for (let i = 0; i < displaySlots; i++) {
+          const dot = document.createElement('span');
+          if (i < state.damageTaken) {
+            dot.className = 'w-3.5 h-3.5 rounded-sm bg-rose-500 border border-rose-300 shadow-[0_0_6px_#f43f5e] inline-block';
+            dot.title = '被弾ダメージ';
+          } else if (state.gameOver && i < state.subLength) {
+            dot.className = 'w-3.5 h-3.5 rounded-sm bg-slate-700 border border-slate-500 inline-block';
+          } else if (!state.gameOver && i < 4) {
+            dot.className = 'w-3.5 h-3.5 rounded-sm bg-slate-800/90 border border-slate-600/80 flex items-center justify-center text-[8px] text-slate-400 font-bold';
+            dot.textContent = i >= 2 ? '?' : '';
+          } else {
+            continue;
+          }
+          damageSlots.appendChild(dot);
+        }
+
+        // ソナーバッジ
+        if (state.sonarDetected) {
+          sonarBadge.className = 'flex flex-col items-center justify-center bg-amber-950/85 border border-amber-400 rounded-lg px-2.5 py-1 min-w-[82px] shadow-[0_0_12px_rgba(251,191,36,0.35)]';
+          sonarText.className = 'text-xs font-black text-amber-300 leading-tight';
+          sonarText.textContent = '反応あり！';
+        } else {
+          sonarBadge.className = 'flex flex-col items-center justify-center bg-slate-950/80 border border-cyan-500/40 rounded-lg px-2.5 py-1 min-w-[82px]';
+          sonarText.className = 'text-xs font-bold text-cyan-300 leading-tight';
+          sonarText.textContent = '反応なし';
+        }
+
+        // モード切替ボタンの見た目更新
+        if (state.mode === 'move') {
+          modeMoveBtn.className = 'flex flex-col items-center justify-center py-2.5 px-2 rounded-xl font-bold border-2 transition active:scale-95 bg-cyan-500/25 border-cyan-400 text-cyan-200 shadow-[0_0_15px_rgba(6,182,212,0.25)]';
+          modeAttackBtn.className = 'flex flex-col items-center justify-center py-2.5 px-2 rounded-xl font-bold border-2 transition active:scale-95 bg-slate-900/80 border-slate-700 text-slate-400';
+        } else {
+          modeMoveBtn.className = 'flex flex-col items-center justify-center py-2.5 px-2 rounded-xl font-bold border-2 transition active:scale-95 bg-slate-900/80 border-slate-700 text-slate-400';
+          modeAttackBtn.className = 'flex flex-col items-center justify-center py-2.5 px-2 rounded-xl font-bold border-2 transition active:scale-95 bg-rose-500/25 border-rose-400 text-rose-200 shadow-[0_0_15px_rgba(244,63,94,0.25)]';
+        }
+
+        // 盤面セルの更新
+        const cells = gridBoard.querySelectorAll('.cell');
+        cells.forEach(cell => {
+          const r = parseInt(cell.dataset.r, 10);
+          const c = parseInt(cell.dataset.c, 10);
+
+          cell.className = 'cell';
+          cell.innerHTML = '';
+
+          const inSonar = isWithinSonar(r, c);
+          if (inSonar) {
+            cell.classList.add('sonar-zone');
+            if (pingSonar) {
+              void cell.offsetWidth;
+              cell.classList.add('sonar-ping-anim');
+            }
+          }
+
+          // 操作可能範囲のハイライト
+          if (!state.gameOver && !state.isProcessing) {
+            if (state.mode === 'move' && isValidMoveTarget(r, c)) {
+              cell.classList.add('valid-move');
+            } else if (state.mode === 'attack' && isValidAttackTarget(r, c)) {
+              cell.classList.add('valid-attack');
+            }
+          }
+
+          // 潜水艦の描画（透視モードON、またはゲーム終了時のみ）
+          const subSeg = state.submarine.find(s => s.r === r && s.c === c);
+          if (subSeg && (state.revealSub || state.gameOver)) {
+            const subDiv = document.createElement('div');
+            subDiv.className = `absolute inset-1 rounded-md border flex items-center justify-center z-10 ${
+              subSeg.hit
+                ? 'bg-rose-600/75 border-rose-300 text-white'
+                : 'bg-emerald-500/45 border-emerald-300 text-emerald-100'
+            }`;
+            subDiv.innerHTML = subSeg.hit
+              ? '<span class="text-xs font-black">💥</span>'
+              : '<span class="w-2.5 h-2.5 rounded-full bg-emerald-300"></span>';
+            cell.appendChild(subDiv);
+          }
+
+          // 直前の攻撃・対空エフェクト描画
+          if (state.lastActionEffect && state.lastActionEffect.r === r && state.lastActionEffect.c === c) {
+            const fx = document.createElement('div');
+            fx.className = 'absolute inset-0 flex items-center justify-center z-30 pointer-events-none effect-pop';
+            if (state.lastActionEffect.type === 'hit') {
+              fx.innerHTML = '<div class="w-4/5 h-4/5 rounded-full bg-amber-500/40 border-2 border-amber-300 flex items-center justify-center text-base">💥</div>';
+            } else if (state.lastActionEffect.type === 'miss') {
+              fx.innerHTML = '<div class="w-3/5 h-3/5 rounded-full border-2 border-cyan-300/80 flex items-center justify-center text-xs text-cyan-200 font-bold">✕</div>';
+            } else if (state.lastActionEffect.type === 'aa') {
+              fx.innerHTML = '<div class="w-full h-full bg-rose-500/45 border-2 border-rose-400 flex items-center justify-center text-base">🔥</div>';
+            }
+            cell.appendChild(fx);
+          }
+
+          // 哨戒機の描画
+          if (state.aircraft.r === r && state.aircraft.c === c) {
+            const plane = document.createElement('div');
+            plane.className = 'aircraft-icon flex items-center justify-center';
+            plane.style.transform = `rotate(${state.aircraftAngle}deg)`;
+            plane.innerHTML = `
+              <svg viewBox="0 0 64 64" class="w-full h-full">
+                <!-- 主翼 -->
+                <path d="M4 34 L28 24 L28 10 L32 4 L36 10 L36 24 L60 34 L60 40 L36 35 L36 50 L46 56 L46 60 L32 57 L18 60 L18 56 L28 50 L28 35 L4 40 Z"
+                      fill="#38bdf8" stroke="#e0f2fe" stroke-width="2.5" stroke-linejoin="round"/>
+                <!-- 機首コックピット -->
+                <ellipse cx="32" cy="18" rx="3" ry="6" fill="#0f172a"/>
+              </svg>
+            `;
+            cell.appendChild(plane);
+          }
+        });
+      }
+
+      function setBanner(text) {
+        statusBanner.textContent = text;
+      }
+
+      function triggerShake() {
+        mainArea.classList.remove('shake');
+        void mainArea.offsetWidth;
+        mainArea.classList.add('shake');
+      }
+
+      // リザルトモーダル表示
+      function showResultModal(isWin) {
+        const badge = document.getElementById('resultBadge');
+        const title = document.getElementById('resultTitle');
+        const desc = document.getElementById('resultDesc');
+        const resTurns = document.getElementById('resTurns');
+        const resSubLength = document.getElementById('resSubLength');
+        const resDamage = document.getElementById('resDamage');
+
+        if (isWin) {
+          badge.textContent = 'MISSION COMPLETE';
+          badge.className = 'inline-block px-3 py-1 rounded-full text-xs font-black tracking-wider mb-2 bg-cyan-500/20 text-cyan-300 border border-cyan-400/50';
+          title.textContent = '敵潜水艦を撃沈！';
+          desc.textContent = `ソナー探知と爆雷攻撃により、潜伏していた全長 ${state.subLength} マスの敵潜水艦を完全に撃破しました！`;
+        } else {
+          badge.textContent = 'AIRCRAFT DOWN';
+          badge.className = 'inline-block px-3 py-1 rounded-full text-xs font-black tracking-wider mb-2 bg-rose-500/20 text-rose-300 border border-rose-400/50';
+          title.textContent = '哨戒機 撃墜…';
+          desc.textContent = `敵潜水艦の真上で対空攻撃を受け、耐久限界（${state.subLength}発）に達しました。`;
+        }
+
+        resTurns.textContent = `${state.turn} ターン`;
+        resSubLength.textContent = `${state.subLength} マス`;
+        resDamage.textContent = `${state.damageTaken} / ${state.subLength} 発`;
+
+        resultModal.classList.remove('hidden');
+        resultModal.classList.add('flex');
+      }
+
+      // イベントリスナー設定
+      modeMoveBtn.addEventListener('click', () => {
+        if (state.gameOver || state.isProcessing) return;
+        state.mode = 'move';
+        setBanner('【移動モード】青い枠（8方向 1〜2マス）をタップして移動');
+        renderAll(false);
+      });
+
+      modeAttackBtn.addEventListener('click', () => {
+        if (state.gameOver || state.isProcessing) return;
+        state.mode = 'attack';
+        setBanner('【爆雷攻撃】赤い枠（周囲9マス）をタップして爆雷投下');
+        renderAll(false);
+      });
+
+      // 設定モーダル開閉
+      document.getElementById('openSettingsBtn').addEventListener('click', () => {
+        settingsModal.classList.remove('hidden');
+        settingsModal.classList.add('flex');
+      });
+
+      document.getElementById('closeSettingsBtn').addEventListener('click', () => {
+        settingsModal.classList.add('hidden');
+        settingsModal.classList.remove('flex');
+      });
+
+      document.getElementById('debugRevealToggle').addEventListener('change', (e) => {
+        state.revealSub = e.target.checked;
+        renderAll(false);
+      });
+
+      document.getElementById('soundToggle').addEventListener('change', (e) => {
+        state.soundEnabled = e.target.checked;
+      });
+
+      document.getElementById('restartFromSettingsBtn').addEventListener('click', () => {
+        state.subLengthSetting = document.getElementById('subLengthSelect').value;
+        settingsModal.classList.add('hidden');
+        settingsModal.classList.remove('flex');
+        initGame();
+      });
+
+      // リザルト画面ボタン
+      document.getElementById('inspectBoardBtn').addEventListener('click', () => {
+        resultModal.classList.add('hidden');
+        resultModal.classList.remove('flex');
+        setBanner('盤面確認中（右上の ⚙ から新規作戦を開始できます）');
+      });
+
+      document.getElementById('playAgainBtn').addEventListener('click', () => {
+        initGame();
+      });
+
+      // 起動
+      buildBoardDOM();
+      initGame();
+    })();
+  </script>
+</body>
+</html>
